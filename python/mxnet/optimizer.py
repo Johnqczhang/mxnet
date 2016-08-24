@@ -678,10 +678,11 @@ class RMSProp(Optimizer):
     clip_gradient : float, optional
         clip gradient in range [-clip_gradient, clip_gradient]
     """
-    def __init__(self, gamma1=0.95, gamma2=0.9, **kwargs):
+    def __init__(self, gamma1=0.95, gamma2=0.9, epsilon=1e-4, **kwargs):
         super(RMSProp, self).__init__(**kwargs)
         self.gamma1 = gamma1
         self.gamma2 = gamma2
+        self.epsilon = epsilon
 
     def create_state(self, index, weight):
         """Create additional optimizer state: mean, variance
@@ -723,7 +724,7 @@ class RMSProp(Optimizer):
             grad = clip(grad, -self.clip_gradient, self.clip_gradient)
         n[:] = (1 - self.gamma1) * (grad * grad) + self.gamma1 * n
         g[:] = (1 - self.gamma1) * grad + self.gamma1 * g
-        delta[:] = (self.gamma2) * delta - lr * (grad/sqrt(n - g*g + 1e-4) + wd * weight)
+        delta[:] = (self.gamma2) * delta - lr * (grad/sqrt(n - g*g + self.epsilon) + wd * weight)
         weight[:] += delta
 
 
