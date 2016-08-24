@@ -123,7 +123,8 @@ def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
                         train_data, eval_data=None, eval_metric=None,
                         epoch_end_callback=None, batch_end_callback=None,
                         logger=None, work_load_list=None, monitor=None,
-                        eval_batch_end_callback=None, sym_gen=None):
+                        eval_batch_end_callback=None, sym_gen=None,
+                        eval_interval=None):
     """Internal training function on multiple devices.
     This function will also work for single device as well.
     Parameters
@@ -175,6 +176,8 @@ def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
     monitor : Monitor, optional
         Monitor installed to executor,
         for monitoring outputs, weights, and gradients for debugging.
+    eval_interval: int, 
+        The number of iterations(batches) between two evaluation phases.
     Notes
     -----
     - This function will inplace update the NDArrays in arg_params and aux_states.
@@ -190,6 +193,13 @@ def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
                                                    aux_names=aux_names,
                                                    work_load_list=work_load_list,
                                                    logger=logger)
+
+    if eval_interval is not None:
+        import copy
+        logger.info('Evaluate on validation set between %d iterations' % eval_interval)
+        iter_ = 0   # training iteration counter
+        eval_metric_val = copy.deepcopy(eval_metric)
+
     if monitor:
         executor_manager.install_monitor(monitor)
 
@@ -256,6 +266,24 @@ def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
                             call(batch_end_params)
                     else:
                         batch_end_callback(batch_end_params)
+
+                # For multiple evaluations during one training epoch
+                if eval_interval is not None and eval_data is not None:
+                    # update training iteration counter
+                    iter_ += 1
+                    # check whether evaluate on eval_data
+                    if iter_ % eval_interval == 0:
+                        val_tic = time.time()
+                        eval_metric_val.reset()
+                        eval_data.reset()                        
+                        for eval_batch in eval_data:
+                            executor_manager.load_data_batch(eval_batch)
+                            executor_manager.forward(is_train=False)
+                            executor_manager.update_metric(eval_metric_val, eval_batch.label)
+                        name_value = eval_metric_val.get_name_value()
+                        for name, value in name_value:
+                            logger.info('Epoch[%d] Batch[%d] Validation-%s=%f', epoch, iter_, name, value)
+                        logger.info('Validation Time cost=%.3f', (time.time() - val_tic))
 
                 # this epoch is done possibly earlier
                 if epoch_size is not None and nbatch >= epoch_size:
@@ -690,7 +718,8 @@ class FeedForward(BASE_ESTIMATOR):
 
     def fit(self, X, y=None, eval_data=None, eval_metric='acc',
             epoch_end_callback=None, batch_end_callback=None, kvstore='local', logger=None,
-            work_load_list=None, monitor=None, eval_batch_end_callback=None):
+            work_load_list=None, monitor=None, eval_batch_end_callback=None,
+            eval_interval=None):
         """Fit the model.
 
         Parameters
@@ -725,6 +754,8 @@ class FeedForward(BASE_ESTIMATOR):
         work_load_list : float or int, optional
             The list of work load for different devices,
             in the same order as ctx
+        eval_interval: int, optional
+            The number of iterations(batches) between two evaluation phases.
 
         Note
         ----
@@ -786,7 +817,7 @@ class FeedForward(BASE_ESTIMATOR):
                             kvstore=kvstore, update_on_kvstore=update_on_kvstore,
                             logger=logger, work_load_list=work_load_list, monitor=monitor,
                             eval_batch_end_callback=eval_batch_end_callback,
-                            sym_gen=self.sym_gen)
+                            sym_gen=self.sym_gen, eval_interval=eval_interval)
 
 
     def save(self, prefix, epoch=None):
