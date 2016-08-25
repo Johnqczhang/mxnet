@@ -620,11 +620,11 @@ def image_preprocess(path_img, mean_rgb, mean_a=0.0, rand_resize=False, resize_d
     """
     try:
         img = cv2.imread(path_img)  # Height x Width x Channel
-    except:
-        print 'imread error:', path_img
+    except Exception, e:
+        print 'cv2.imread error:', path_img, e
         return
     if img is None:
-        print 'imread error:', path_img
+        print 'imread error:', path_img, 'is None.'
         return
 
     ## Resize the image
