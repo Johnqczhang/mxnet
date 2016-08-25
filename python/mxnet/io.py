@@ -697,7 +697,13 @@ def image_preprocess(path_img, mean_rgb, mean_a=0.0, rand_resize=False, resize_d
     return img
 
 class ImageDataIter(DataIter):
-    """DataIter that loads images directly"""
+    """DataIter that loads images directly from the disk
+    Parameters
+    ----------
+    img_lst: str, the lst file
+    mean_rgb: tuple, (mean_r, mean_g, mean_b)
+    resize_dims: list or int
+    """
     def __init__(self, img_lst, data_shape, mean_rgb=None, mean_a=0.0, 
                  batch_size=None, root=None, rand_crop=False,
                  rand_mirror=False, mirror=False, shuffle=False,
@@ -732,7 +738,6 @@ class ImageDataIter(DataIter):
 
         self.cursor = -batch_size
         
-
     @property
     def provide_data(self):
         """The name and shape of data provided by this iterator"""
