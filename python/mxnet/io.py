@@ -784,6 +784,7 @@ class ImageDataIter(DataIter):
             data[i] = image_preprocess(os.path.join(self.root, filename), self.mean_rgb, self.mean_a, 
                                        self.rand_resize, self.resize_dims, self.rand_crop, 
                                        self.crop_size, self.rand_mirror, self.mirror)
+            assert data[i] is not None, 'image preprocess error:', filename, 'is None.'
 
         return [array(data)], [array(label)]
     
@@ -929,6 +930,7 @@ class ImageSampleIter(ImageDataIter):
             data[i] = image_preprocess(os.path.join(self.root, filename), self.mean_rgb, self.mean_a, 
                                        self.rand_resize, self.resize_dims, self.rand_crop, 
                                        self.crop_size, self.rand_mirror, self.mirror)
+            assert data[i] is not None, 'image preprocess error:', filename, 'is None.'
             
             # update cursors
             self.update_cursor(class_id=class_id)
