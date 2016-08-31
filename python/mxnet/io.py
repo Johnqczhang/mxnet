@@ -18,6 +18,7 @@ from .base import DataIterHandle, NDArrayHandle
 from .base import check_call, ctypes2docstring
 from .ndarray import NDArray
 from .ndarray import array
+from .ndarray import load
 
 
 class DataBatch(object):
@@ -608,13 +609,16 @@ def _init_io_module():
 _init_io_module()
 
 
-def image_preprocess(path_img, mean_rgb, mean_a=0.0, rand_resize=False, resize_dims=None, 
+def image_preprocess(path_img, mean_img, rand_resize=False, resize_dims=None, 
                      rand_crop=False, crop_size=None, rand_mirror=False, mirror=False):
     """Preprocess image
     Parameters
     ----------
     path_img: str
-    mean_rgb: tuple
+    mean_img: numpy.ndarray or tuple, 
+        if numpy.ndarray, subtract mean per pixel
+        if tuple, subtract mean per channel, mean_img should be either 3-dim tuple (mean_r, mean_g, mean_b)
+        or 4-dim tuple (mean_r, mean_g, mean_b, mean_a)
     resize_dims: list
     crop_size: tuple
     """
@@ -661,14 +665,6 @@ def image_preprocess(path_img, mean_rgb, mean_a=0.0, rand_resize=False, resize_d
     img = img.transpose((2,0,1))
     # convert image data type from int to float
     img = img.astype(np.float32)
-    
-    ## Subtract mean per channel
-    img[0] -= mean_rgb[0]
-    if img.shape[0] >= 3:
-        img[1] -= mean_rgb[1]
-        img[2] -= mean_rgb[2]
-    if img.shape[0] == 4:
-        img[3] -= mean_a
 
     ## Crop the image
     if crop_size is not None and img.shape[1:] != crop_size:
@@ -690,6 +686,18 @@ def image_preprocess(path_img, mean_rgb, mean_a=0.0, rand_resize=False, resize_d
     ## Color jittering
     # TODO(johnqczhang): will implement color space augmentation later
 
+    ## Subtract mean
+    if isinstance(mean_img, tuple):   # per channel
+        img[0] -= mean_img[0]
+        if img.shape[0] >= 3:
+            img[1] -= mean_img[1]
+            img[2] -= mean_img[2]
+        if img.shape[0] == 4:
+            img[3] -= mean_img[3]
+    else:   # per pixel
+        assert img.shape == mean_img.shape, 'subtract mean error:, mean_img shape dismatch'
+        img -= mean_img
+
     ## Mirror
     if (rand_mirror and np.random.randint(2)) or mirror:
         img = img[:, :, ::-1]
@@ -700,14 +708,18 @@ class ImageDataIter(DataIter):
     """DataIter that loads images directly from the disk
     Parameters
     ----------
-    img_lst: str, the lst file
+    img_lst: str, the path of .lst file
+    mean_img: str, the path of mean file
     mean_rgb: tuple, (mean_r, mean_g, mean_b)
+    mean_a: float, the alpha value for the image that has 'RGBA' channels
     resize_dims: list or int
     """
-    def __init__(self, img_lst, data_shape, mean_rgb=None, mean_a=0.0, 
+    def __init__(self, img_lst, data_shape, mean_img=None, mean_rgb=None, mean_a=0.0, 
                  batch_size=None, root=None, rand_crop=False,
                  rand_mirror=False, mirror=False, shuffle=False,
                  rand_resize=False, resize_dims=None):
+        assert (mean_img is None) != (mean_rgb is None), 'mean error: either mean_img or mean_rgb should be given.'
+
         super(ImageDataIter, self).__init__()
         
         # reading image lst file
@@ -721,8 +733,11 @@ class ImageDataIter(DataIter):
         self.img = lines
         self.num_data = len(lines)
 
-        self.mean_rgb = mean_rgb
-        self.mean_a = mean_a
+        if mean_img is not None:
+            print 'Load mean image from %s' % mean_img
+            self.mean_img = load(mean_img)['mean_img'].asnumpy()
+        else:
+            self.mean_img = tuple(list(mean_rgb)+[mean_a])
         self.root = root
         self.data_shape = data_shape
         self.crop_size = (data_shape[1], data_shape[2])
@@ -781,10 +796,10 @@ class ImageDataIter(DataIter):
             img_info = self.img[cur_].split()
             filename = img_info[-1].strip('/')
             label[i] = int(img_info[1])
-            data[i] = image_preprocess(os.path.join(self.root, filename), self.mean_rgb, self.mean_a, 
+            data[i] = image_preprocess(os.path.join(self.root, filename), self.mean_img, 
                                        self.rand_resize, self.resize_dims, self.rand_crop, 
                                        self.crop_size, self.rand_mirror, self.mirror)
-            assert data[i] is not None, 'image preprocess error:', filename, 'is None.'
+            assert data[i] is not None, 'image preprocess error: %s is None.' % filename
 
         return [array(data)], [array(label)]
     
@@ -794,7 +809,7 @@ class ImageDataIter(DataIter):
 
 class ImageSampleIter(ImageDataIter):
     """DataIter that loads images directly and samples images in a balanced way"""
-    def __init__(self, img_lists, data_shape, mean_rgb=None, mean_a=0.0, 
+    def __init__(self, img_lists, data_shape, mean_img=None, mean_rgb=None, mean_a=0.0, 
                  batch_size=None, root=None, rand_resize=False, resize_dims=None, 
                  rand_crop=False, rand_mirror=False, mirror=False, shuffle=False):
         # reading per-class image lists
@@ -807,6 +822,7 @@ class ImageSampleIter(ImageDataIter):
             # shuffle data to sample an image from per-class image list randomly
             if shuffle:
                 np.random.shuffle(lines)
+            
             self.img_lists.append(lines)
 
         if img_lists[0].endswith('lst'):
@@ -826,10 +842,11 @@ class ImageSampleIter(ImageDataIter):
         # get the total number of images over all classes
         self.num_data = sum(self.num_per_class)
 
-        # the mean value over 'RGB' channels
-        self.mean_rgb = mean_rgb
-        # the alpha value for the image that has 'RGBA' channels
-        self.mean_a = mean_a
+        if mean_img is not None:
+            print 'Load mean image from %s' % mean_img
+            self.mean_img = load(mean_img)['mean_img'].asnumpy()
+        else:
+            self.mean_img = tuple(list(mean_rgb)+[mean_a])
         # the data shape that will be input to the network, i.e., crop_size
         self.data_shape = data_shape
         self.crop_size = (data_shape[1], data_shape[2])
@@ -927,10 +944,10 @@ class ImageSampleIter(ImageDataIter):
             else:
                 filename = img_info[0].strip('/')
             label[i] = class_id
-            data[i] = image_preprocess(os.path.join(self.root, filename), self.mean_rgb, self.mean_a, 
+            data[i] = image_preprocess(os.path.join(self.root, filename), self.mean_img, 
                                        self.rand_resize, self.resize_dims, self.rand_crop, 
                                        self.crop_size, self.rand_mirror, self.mirror)
-            assert data[i] is not None, 'image preprocess error:', filename, 'is None.'
+            assert data[i] is not None, 'image preprocess error: %s is None.' % filename
             
             # update cursors
             self.update_cursor(class_id=class_id)
