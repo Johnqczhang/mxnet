@@ -609,64 +609,142 @@ def _init_io_module():
 _init_io_module()
 
 
-def image_preprocess(path_img, mean_img, rand_resize=False, resize_dims=None, 
-                     rand_crop=False, crop_size=None, rand_mirror=False, mirror=False):
-    """Preprocess image
+def load_image(path_img, color=1):
+    """
+    Load an image converting from grayscale or alpha as needed.
+
     Parameters
     ----------
-    path_img: str
-    mean_img: numpy.ndarray or tuple, 
-        if numpy.ndarray, subtract mean per pixel
-        if tuple, subtract mean per channel, mean_img should be either 3-dim tuple (mean_r, mean_g, mean_b)
-        or 4-dim tuple (mean_r, mean_g, mean_b, mean_a)
-    resize_dims: list
-    crop_size: tuple
+    path_img: string
+    color: integer
+        flag for color format. 1 (default) loads as RGB while 0
+        loads as intensity (if image is already grayscale).
+
+    Returns
+    -------
+    image: an image with type np.uint8 in range [0, 255] of size (H x W x 3) in RGB.
     """
     try:
-        img = cv2.imread(path_img)  # Height x Width x Channel
+        img = cv2.imread(path_img, color)  # Height x Width x Channel
     except Exception, e:
         print 'cv2.imread error:', path_img, e
         return
+    return img
+
+
+def resize_image(img, resize_dim, interp_order=1):
+    """
+    Resize an image array isotropically with interpolation.
+
+    Parameters
+    ----------
+    img: (H x W x C) ndarray
+    resize_dim: integer, the new dimension of the shorter side of the image.
+    interp_order: interpolation order, 1 (default) is bilinear interpolation. 
+
+    Returns
+    -------
+    resized_img: resized ndarray with shape (new_dims[0], new_dims[1], C)
+    """    
+    # Get the shorter dim and longer dim of the original image
+    shorter = 0 if img.shape[0] < img.shape[1] else 1
+    short_dim = img.shape[shorter]
+
+    if short_dim != resize_dim:
+        long_dim = img.shape[1-shorter]
+        new_long_dim = int(round(resize_dim*long_dim*1.0 / short_dim))
+        new_shape = (resize_dim, new_long_dim) if shorter == 0 else (new_long_dim, resize_dim)
+        # resize the image
+        resized_img = cv2.resize(img, new_shape, interpolation=interp_order)
+    else:
+        resized_img = img
+
+    return resized_img
+
+
+def subtract_mean(img, img_mean):
+    """
+    Subtract the mean for centering the data.
+
+    Parameters
+    ----------
+    img: (C x H x W) ndarray
+    img_mean: numpy.ndarray or tuple, 
+        for numpy.ndarray, subtract mean per pixel
+        for tuple, subtract mean per channel, mean_img should be either 3-dim tuple (mean_r, mean_g, mean_b)
+        or 4-dim tuple (mean_r, mean_g, mean_b, mean_a) 
+
+    Returns
+    -------
+    mean_img: subtracted mean ndarray with shape (C x H x W)
+    """ 
+    # Subtract mean per channel
+    if isinstance(img_mean, tuple): 
+        mean_img = np.empty(img.shape)
+        mean_img[0] = img[0] - img_mean[0]
+        if img.shape[0] >= 3:
+            mean_img[1] = img[1] - img_mean[1]
+            mean_img[2] = img[2] - img_mean[2]
+        if img.shape[0] == 4:
+            mean_img[3] = img[3] - img_mean[3]
+    # Subtract mean per pixel
+    else:
+        assert img.shape == img_mean.shape, 'subtract mean per pixel error:, mean_img shape dismatch.'
+        mean_img = img - img_mean
+    
+    return mean_img
+
+
+def image_preprocess(path_img, img_mean, resize_dims=None, 
+                     rand_crop=False, crop_size=None, 
+                     rand_mirror=False, mirror=False):
+    """Preprocess image
+
+    Parameters
+    ----------
+    path_img: string, the path of image.
+    img_mean: numpy.ndarray or tuple.
+    resize_dims: list.
+        If resize_dims has exactly one element, it should be either an integer or a tuple, for an integer, it 
+        indicates the new dimension of the shorter side of resized image; for a tuple, it indicates a/an 
+        range/interval from which the new dimension of the shorter side of resized image will be chosen randomly.
+        Otherwise resize_dims should have at least two distinct integers from which the new dimension of the 
+        shorter side of resized image will be chosen randomly. 
+    crop_size: (cropped_height, cropped_width) tuple of new cropped dimensions.
+
+    Returns
+    -------
+    img: preprocessed image ndarray with shape (C x H x W)
+    """
+    # Load image from path_img
+    img = load_image(path_img)
     if img is None:
-        print 'imread error:', path_img, 'is None.'
+        print 'load image error:', path_img, 'is None.'
         return
 
-    ## Resize the image
+    # Resize image
     if resize_dims is not None:
-        # if rand_resize, then resize_dims should either contain at least two different dims
-        # or contain exactly one tuple that indicates the interval of resize dimension
-        if rand_resize:
-            # randomly pick a resize dim if resize_dims has more than one element
-            if len(resize_dims) > 1:
-                resize_dim = int(resize_dims[np.random.randint(len(resize_dims))])
-            # randomly pick a resize dim in the interval
-            elif isinstance(resize_dims[0], tuple):
-                resize_dim = np.random.randint(resize_dims[0][0], resize_dims[0][1]+1)
-            else:
-                print 'resize error:', resize_dims, 'should has either at least two different dims or exactly one tuple.'
-                return
-        # else, resize_dims should be a list that contains only one dim, either int or float type
+        # Get the new dimension of the shorter side of the resized image
+        # pick a resize dim randomly if resize_dims has more than one element
+        if len(resize_dims) > 1:
+            resize_dim = int(resize_dims[np.random.randint(len(resize_dims))])
+        # pick a resize dim randomly from the interval indicated by the tuple
+        elif isinstance(resize_dims[0], tuple):
+            resize_dim = np.random.randint(resize_dims[0][0], resize_dims[0][1]+1)
+        # otherwise, resize_dim(s) only has one integer
         else:
             resize_dim = int(resize_dims[0])
-        
-        # get the short dim and long dim of original image
-        shorter = 0 if img.shape[0] < img.shape[1] else 1
-        short_dim = img.shape[shorter]
-        if short_dim != resize_dim:
-            long_dim = img.shape[1-shorter]
-            new_long_dim = int(round(resize_dim*long_dim*1.0 / short_dim))
-            new_shape = (resize_dim, new_long_dim) if shorter == 0 else (new_long_dim, resize_dim)
-            # resize, use bilinear interpolation method (default)
-            img = cv2.resize(img, new_shape)
+        # Resize
+        img = resize_image(img, resize_dim)
 
-    # Swap the order of channels from BGR to RGB
-    img = img[:,:,(2, 1, 0)]
-    # Swap the order of dims from 'h x w x c' to 'c x h x w'
-    img = img.transpose((2,0,1))
     # convert image data type from int to float
     img = img.astype(np.float32)
+    # Swap the order of dims from 'h x w x c' to 'c x h x w'
+    img = img.transpose((2, 0, 1))
+    # Swap the order of channels from BGR to RGB
+    img = img[(2, 1, 0), :, :]
 
-    ## Crop the image
+    # Crop the image
     if crop_size is not None and img.shape[1:] != crop_size:
         h_max = img.shape[1] - crop_size[0]
         w_max = img.shape[2] - crop_size[1]
@@ -683,22 +761,13 @@ def image_preprocess(path_img, mean_img, rand_resize=False, resize_dims=None,
             w = w_max / 2
         img = img[:, h:h+crop_size[0], w:w+crop_size[1]]
 
-    ## Color jittering
+    # Color jittering
     # TODO(johnqczhang): will implement color space augmentation later
 
-    ## Subtract mean
-    if isinstance(mean_img, tuple):   # per channel
-        img[0] -= mean_img[0]
-        if img.shape[0] >= 3:
-            img[1] -= mean_img[1]
-            img[2] -= mean_img[2]
-        if img.shape[0] == 4:
-            img[3] -= mean_img[3]
-    else:   # per pixel
-        assert img.shape == mean_img.shape, 'subtract mean error:, mean_img shape dismatch'
-        img -= mean_img
+    # Subtract mean
+    img = subtract_mean(img, img_mean)
 
-    ## Mirror
+    # Mirror
     if (rand_mirror and np.random.randint(2)) or mirror:
         img = img[:, :, ::-1]
 
@@ -706,51 +775,63 @@ def image_preprocess(path_img, mean_img, rand_resize=False, resize_dims=None,
 
 class ImageDataIter(DataIter):
     """DataIter that loads images directly from the disk
+
     Parameters
     ----------
-    img_lst: str, the path of .lst file
-    mean_img: str, the path of mean file
-    mean_rgb: tuple, (mean_r, mean_g, mean_b)
-    mean_a: float, the alpha value for the image that has 'RGBA' channels
-    resize_dims: list or int
+    img_lst: string, the path of the image list file (.lst).
+    data_shape: tuple, (batch_size, channel, height, width), here the height and width should be
+        the cropped size that will be input to the network.
+    mean_img: string, the path of mean file.
+    mean_rgb: tuple, (mean_r, mean_g, mean_b).
+        Note: Either mean_img or mean_rgb should be given.
+    mean_a: float, the mean value of alpha channel.
+    batch_size: integer, the number of images in a mini-batch.
+    root: string, the full path of image data directory.
+    rand_crop: boolean, whether crop a patch randomly from the original image.
+    resize_dims: list, tuple or integer.
+    rand_mirror: boolean, whether take the mirrored version of the image randomly.
+    mirror: boolean, whether take the mirrored version of the image.
+    shuffle: boolean, whether shuffle the image list.
     """
-    def __init__(self, img_lst, data_shape, mean_img=None, mean_rgb=None, mean_a=0.0, 
-                 batch_size=None, root=None, rand_crop=False,
-                 rand_mirror=False, mirror=False, shuffle=False,
-                 rand_resize=False, resize_dims=None):
+    def __init__(self, data_shape, img_lst=None, mean_img=None, mean_rgb=None, 
+                 mean_a=0.0, batch_size=None, root=None, resize_dims=None, 
+                 rand_crop=False, rand_mirror=False, mirror=False, shuffle=False):
         assert (mean_img is None) != (mean_rgb is None), 'mean error: either mean_img or mean_rgb should be given.'
 
         super(ImageDataIter, self).__init__()
         
-        # reading image lst file
+        # reading image list file
         with open(img_lst) as f:
             lines = f.readlines()
-        
         # shuffle data
         if shuffle:
             np.random.shuffle(lines)
-
         self.img = lines
+        # the total number of all images
         self.num_data = len(lines)
+        # the data shape that will be input to the network
+        self.data_shape = data_shape
+        self.crop_size = (data_shape[1], data_shape[2])
 
+        # the mean file over pixels or mean value over channels
         if mean_img is not None:
             print 'Load mean image from %s' % mean_img
             self.mean_img = load(mean_img)['mean_img'].asnumpy()
         else:
             self.mean_img = tuple(list(mean_rgb)+[mean_a])
-        self.root = root
-        self.data_shape = data_shape
-        self.crop_size = (data_shape[1], data_shape[2])
+
         self.batch_size = batch_size
-        self.rand_crop = rand_crop
-        self.rand_mirror = rand_mirror
-        self.mirror = mirror        
-        self.shuffle = shuffle
-        self.rand_resize = rand_resize
+        self.root = root
+        # convert resize_dims into a list
         if resize_dims is not None and not isinstance(resize_dims, list):
             resize_dims = [resize_dims]
         self.resize_dims = resize_dims
+        self.rand_crop = rand_crop
+        self.rand_mirror = rand_mirror
+        self.mirror = mirror
+        self.shuffle = shuffle
 
+        # the cursor that points to the current batch (iteration)
         self.cursor = -batch_size
         
     @property
@@ -797,8 +878,8 @@ class ImageDataIter(DataIter):
             filename = img_info[-1].strip('/')
             label[i] = int(img_info[1])
             data[i] = image_preprocess(os.path.join(self.root, filename), self.mean_img, 
-                                       self.rand_resize, self.resize_dims, self.rand_crop, 
-                                       self.crop_size, self.rand_mirror, self.mirror)
+                                       self.resize_dims, self.rand_crop, self.crop_size, 
+                                       self.rand_mirror, self.mirror)
             assert data[i] is not None, 'image preprocess error: %s is None.' % filename
 
         return [array(data)], [array(label)]
@@ -807,10 +888,28 @@ class ImageDataIter(DataIter):
         return 0
 
 
-class ImageSampleIter(ImageDataIter):
-    """DataIter that loads images directly and samples images in a balanced way"""
-    def __init__(self, img_lists, data_shape, mean_img=None, mean_rgb=None, mean_a=0.0, 
-                 batch_size=None, root=None, rand_resize=False, resize_dims=None, 
+class ImageSampleIter(DataIter):
+    """DataIter that loads images directly and samples images in a balanced way
+    
+    Parameters
+    ----------
+    img_lists: list, each element is a string that indicates the path of per-class image list file
+    data_shape: tuple, (batch_size, channel, height, width), here the height and width should be
+        the cropped size that will be input to the network.
+    mean_img: string, the path of mean file.
+    mean_rgb: tuple, (mean_r, mean_g, mean_b).
+        Note: Either mean_img or mean_rgb should be given.
+    mean_a: float, the mean value of alpha channel.
+    batch_size: integer, the number of images in a mini-batch.
+    root: string, the full path of image data directory.
+    rand_crop: boolean, whether crop a patch randomly from the original image.
+    resize_dims: list, tuple or integer.
+    rand_mirror: boolean, whether take the mirrored version of the image randomly.
+    mirror: boolean, whether take the mirrored version of the image.
+    shuffle: boolean, whether shuffle the image list.
+    """
+    def __init__(self, img_lists, data_shape, mean_img=None, mean_rgb=None, 
+                 mean_a=0.0, batch_size=None, root=None, resize_dims=None, 
                  rand_crop=False, rand_mirror=False, mirror=False, shuffle=False):
         # reading per-class image lists
         self.img_lists = []
@@ -847,14 +946,12 @@ class ImageSampleIter(ImageDataIter):
             self.mean_img = load(mean_img)['mean_img'].asnumpy()
         else:
             self.mean_img = tuple(list(mean_rgb)+[mean_a])
-        # the data shape that will be input to the network, i.e., crop_size
+        
         self.data_shape = data_shape
         self.crop_size = (data_shape[1], data_shape[2])
         self.batch_size = batch_size
         # the image root directory
-        self.root = root
-        # whether randomly resize the original image
-        self.rand_resize = rand_resize    
+        self.root = root 
         # resize dims (could be multiple scales, an interval, or just one dim)
         if resize_dims  is not None and not isinstance(resize_dims, list):
             resize_dims = [resize_dims]
@@ -865,7 +962,7 @@ class ImageSampleIter(ImageDataIter):
         # horizontal flip
         self.rand_mirror = rand_mirror
         self.mirror = mirror
-        self.shuffle = shuffle        
+        self.shuffle = shuffle
 
         # the cursor that points to the current batch (iteration)
         self.cursor = -batch_size
@@ -945,8 +1042,8 @@ class ImageSampleIter(ImageDataIter):
                 filename = img_info[0].strip('/')
             label[i] = class_id
             data[i] = image_preprocess(os.path.join(self.root, filename), self.mean_img, 
-                                       self.rand_resize, self.resize_dims, self.rand_crop, 
-                                       self.crop_size, self.rand_mirror, self.mirror)
+                                       self.resize_dims, self.rand_crop, self.crop_size, 
+                                       self.rand_mirror, self.mirror)
             assert data[i] is not None, 'image preprocess error: %s is None.' % filename
             
             # update cursors
