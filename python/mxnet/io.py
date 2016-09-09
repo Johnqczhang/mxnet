@@ -1,17 +1,17 @@
 # coding: utf-8
-# pylint: disable=invalid-name, protected-access, fixme, too-many-arguments, W0221, W0201, no-self-use
+# pylint: disable=invalid-name, protected-access, fixme, too-many-arguments, W0221, W0201, no-self-use, no-member
 
 """NDArray interface of mxnet"""
 from __future__ import absolute_import
 from collections import OrderedDict
 
-import ctypes
 import cv2
 import os
 import sys
-import numpy as np
+import ctypes
 import logging
 import threading
+import numpy as np
 from .base import _LIB
 from .base import c_array, c_str, mx_uint, py_str
 from .base import DataIterHandle, NDArrayHandle
@@ -399,10 +399,7 @@ class NDArrayIter(DataIter):
 
     def iter_next(self):
         self.cursor += self.batch_size
-        if self.cursor < self.num_data:
-            return True
-        else:
-            return False
+        return self.cursor < self.num_data
 
     def next(self):
         if self.iter_next():
