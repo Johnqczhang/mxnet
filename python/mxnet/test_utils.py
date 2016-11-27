@@ -3,12 +3,15 @@
 # pylint: disable=invalid-name, no-member, too-many-arguments, too-many-locals, too-many-branches, too-many-statements, broad-except, line-too-long, unused-import
 from __future__ import absolute_import, print_function, division
 import time
+import traceback
+import numbers
 import numpy as np
 import numpy.testing as npt
 import mxnet as mx
 
 from .context import cpu, gpu, Context
 from .ndarray import array
+from .symbol import Symbol
 
 _rng = np.random.RandomState(1234)
 
@@ -90,7 +93,7 @@ def same(a, b):
 def reldiff(a, b):
     """Calculate the relative difference between two input arrays
 
-    Calculated by :math:`\\frac{|a-b|^2}{|a|^2 + |b|^2}`
+    Calculated by :math:`\\frac{|a-b|_1}{|a|_1 + |b|_1}`
 
     Parameters
     ----------
@@ -108,7 +111,29 @@ def reldiff(a, b):
 def almost_equal(a, b, threshold=None):
     """Test if two numpy arrays are almost equal."""
     threshold = threshold or default_numerical_threshold()
-    return reldiff(a, b) <= threshold
+    rel = reldiff(a, b)
+    return not np.isnan(rel) and rel <= threshold
+
+
+def assert_almost_equal(a, b, threshold=None):
+    """Test that two numpy arrays are almost equal. Raise exception message if not.
+
+    Parameters
+    ----------
+    a : np.ndarray
+    b : np.ndarray
+    threshold : None or float
+        The checking threshold. Default threshold will be used if set to None
+    """
+    threshold = threshold or default_numerical_threshold()
+    rel = reldiff(a, b)
+    if np.isnan(rel) or rel > threshold:
+        np.set_printoptions(threshold=4, suppress=True)
+        msg = npt.build_err_msg([a, b],
+                                err_msg="Rel Err=%f, Expected <=%f" % (rel, threshold),
+                                names=["a", "b"])
+        raise Exception(msg)
+    return rel
 
 
 def simple_forward(sym, ctx=None, is_train=False, **inputs):
@@ -203,39 +228,42 @@ def numeric_grad(executor, location, aux_states=None, eps=1e-4, use_forward_trai
         Argument values used as location to compute gradient
         Maps the name of arguments to the corresponding numpy.ndarray.
         Value of all the arguments must be provided.
-    aux_states : None or list of numpy.ndarray or dict of str to numpy.ndarray
+    aux_states : None or list of numpy.ndarray or dict of str to numpy.ndarray, optional
         Auxiliary states values used as location to compute gradient
         Maps the name of aux_states to the corresponding numpy.ndarray.
         Value of all the auxiliary arguments must be provided.
     eps : float, optional
         epsilon for the finite-difference method
-
+    use_forward_train : bool, optional
+        Whether to use `is_train=True` in testing.
     References
     ---------
     ..[1] https://github.com/Theano/Theano/blob/master/theano/gradient.py
     """
     for k, v in location.items():
         executor.arg_dict[k][:] = v
-    approx_grads = {k:np.zeros(v.shape, dtype=np.float32) for k, v in location.items()}
+    approx_grads = {k: np.zeros(v.shape, dtype=np.float32)
+                    for k, v in location.items()}
 
     executor.forward(is_train=use_forward_train)
     f_x = executor.outputs[0].asnumpy()[0]
+    for k in location:
+        location[k] = np.ascontiguousarray(location[k])
     for k, v in location.items():
         old_value = v.copy()
         for i in range(np.prod(v.shape)):
             # inplace update
-            v.reshape((np.prod(v.shape), 1))[i] += eps
-            # set initial states. Need to set all due to inplace operations
-            for key, val in location.items():
-                executor.arg_dict[key][:] = val
+            v.ravel()[i] += eps
+            executor.arg_dict[k][:] = v
             if aux_states is not None:
                 for key, val in aux_states.items():
                     executor.aux_dict[key][:] = val
             executor.forward(is_train=use_forward_train)
             f_eps = executor.outputs[0].asnumpy()[0]
             approx_grads[k].ravel()[i] = (f_eps - f_x) / eps
-            v.reshape((np.prod(v.shape), 1))[i] = old_value.reshape((np.prod(v.shape), 1))[i]
-
+            v.ravel()[i] = old_value.ravel()[i]
+        # copy back the original value
+        executor.arg_dict[k][:] = old_value
     return approx_grads
 
 
@@ -585,7 +613,9 @@ def check_speed(sym, location=None, ctx=None, N=20, grad_req=None, typ="whole",
         raise ValueError('typ can only be "whole" or "forward".')
 
 
-def check_consistency(sym, ctx_list, scale=1.0, grad_req='write'):
+def check_consistency(sym, ctx_list, scale=1.0, grad_req='write',
+                      arg_params=None, aux_params=None, tol=None,
+                      raise_on_err=True, ground_truth=None):
     """Check symbol gives the same output for different running context
 
     Parameters
@@ -624,61 +654,95 @@ def check_consistency(sym, ctx_list, scale=1.0, grad_req='write'):
   'type_dict': {'concat_arg0': np.float32, 'concat_arg1': np.float32}}]
     >>> check_consistency(sym, ctx_list)
     """
-    tol = {np.dtype(np.float16): 1e-1,
-           np.dtype(np.float32): 1e-3,
-           np.dtype(np.float64): 1e-5,
-           np.dtype(np.uint8): 0,
-           np.dtype(np.int32): 0}
+    if tol is None:
+        tol = {np.dtype(np.float16): 1e-1,
+               np.dtype(np.float32): 1e-3,
+               np.dtype(np.float64): 1e-5,
+               np.dtype(np.uint8): 0,
+               np.dtype(np.int32): 0}
+    elif isinstance(tol, numbers.Number):
+        tol = {np.dtype(np.float16): tol,
+               np.dtype(np.float32): tol,
+               np.dtype(np.float64): tol,
+               np.dtype(np.uint8): tol,
+               np.dtype(np.int32): tol}
+
     assert len(ctx_list) > 1
-    exe_list = [sym.simple_bind(grad_req=grad_req, **ctx) for ctx in ctx_list]
+    if isinstance(sym, Symbol):
+        sym = [sym]*len(ctx_list)
+    else:
+        assert len(sym) == len(ctx_list)
+
+    output_names = sym[0].list_outputs()
+    arg_names = sym[0].list_arguments()
+    exe_list = []
+    for s, ctx in zip(sym, ctx_list):
+        assert s.list_arguments() == arg_names
+        assert s.list_outputs() == output_names
+        exe_list.append(s.simple_bind(grad_req=grad_req, **ctx))
+
+    arg_params = {} if arg_params is None else arg_params
+    aux_params = {} if aux_params is None else aux_params
+    for n, arr in exe_list[0].arg_dict.items():
+        if n not in arg_params:
+            arg_params[n] = np.random.normal(size=arr.shape, scale=scale)
+    for n, arr in exe_list[0].aux_dict.items():
+        if n not in aux_params:
+            aux_params[n] = 0
     for exe in exe_list:
-        assert len(exe.outputs) == 1
-        assert len(exe.arg_arrays) == len(exe_list[0].arg_arrays)
-        assert len(exe.grad_arrays) == len(exe_list[0].grad_arrays)
+        for name, arr in exe.arg_dict.items():
+            arr[:] = arg_params[name]
+        for name, arr in exe.aux_dict.items():
+            arr[:] = aux_params[name]
 
-    init = [np.random.normal(size=arr.shape, scale=scale) for arr in exe_list[0].arg_arrays]
-    if sym.name == 'embedding':
-        init[0] = np.random.randint(low=0, high=10, size=exe_list[0].arg_arrays[0].shape)
-
-    for exe in exe_list:
-        for arr, iarr in zip(exe.arg_arrays, init):
-            arr[:] = iarr.astype(arr.dtype)
-
-    # forward
-    for exe in exe_list:
-        exe.forward(is_train=True)
-        exe.backward(exe.outputs[0])
-
-    outputs = [exe.outputs[0].asnumpy() for exe in exe_list]
-    # lazy solution handling None grad
-    grads = [[grad.asnumpy() if grad is not None else np.zeros(1) for grad in exe.grad_arrays] for exe in exe_list]
-    dtypes = [arr.dtype for arr in outputs]
+    dtypes = [np.dtype(exe.outputs[0].dtype) for exe in exe_list]
     max_idx = np.argmax(dtypes)
+    gt = ground_truth
+    if gt is None:
+        gt = exe_list[max_idx].output_dict.copy()
+        if grad_req != 'null':
+            gt.update(exe_list[max_idx].grad_dict)
 
-    for i, exe in enumerate(exe_list):
-        if i == max_idx:
-            continue
-        for arr1, arr2 in zip([outputs[i]]+grads[i], [outputs[max_idx]]+grads[max_idx]):
-            arr2 = arr2.astype(dtypes[i])
-            try:
-                npt.assert_allclose(arr1, arr2, rtol=tol[dtypes[i]], atol=tol[dtypes[i]])
-            except Exception as e:
-                print(e)
-
-    #forward predict
+    # test
     for exe in exe_list:
         exe.forward(is_train=False)
 
-    outputs = [exe.outputs[0].asnumpy() for exe in exe_list]
-    dtypes = [arr.dtype for arr in outputs]
-    max_idx = np.argmax(dtypes)
-
     for i, exe in enumerate(exe_list):
         if i == max_idx:
             continue
-        for arr1, arr2 in zip([outputs[i]], [outputs[max_idx]]):
-            arr2 = arr2.astype(dtypes[i])
+        for name, arr in zip(output_names, exe.outputs):
+            gtarr = gt[name].astype(dtypes[i]).asnumpy()
+            arr = arr.asnumpy()
             try:
-                npt.assert_allclose(arr1, arr2, rtol=tol[dtypes[i]], atol=tol[dtypes[i]])
+                npt.assert_allclose(arr, gtarr, rtol=tol[dtypes[i]], atol=tol[dtypes[i]])
             except Exception as e:
-                print(e)
+                print('Predict Err: ctx %d vs ctx %d at %s'%(i, max_idx, name))
+                traceback.print_exc()
+                if raise_on_err:
+                    raise e
+
+    # train
+    if grad_req != 'null':
+        for exe in exe_list:
+            exe.forward(is_train=True)
+            exe.backward(exe.outputs)
+
+        for i, exe in enumerate(exe_list):
+            if i == max_idx:
+                continue
+            curr = zip(output_names + arg_names, exe.outputs + exe.grad_arrays)
+            for name, arr in curr:
+                if gt[name] is None:
+                    assert arr is None
+                    continue
+                gtarr = gt[name].astype(dtypes[i]).asnumpy()
+                arr = arr.asnumpy()
+                try:
+                    npt.assert_allclose(arr, gtarr, rtol=tol[dtypes[i]], atol=tol[dtypes[i]])
+                except Exception as e:
+                    print('Train Err: ctx %d vs ctx %d at %s'%(i, max_idx, name))
+                    print(e)
+                    if raise_on_err:
+                        raise e
+
+    return gt

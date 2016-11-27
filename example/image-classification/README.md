@@ -1,7 +1,6 @@
 # Image Classification
 
-This fold contains examples for image classifications. In this task, we assign
-labels to an image with confidence scores, see the following figure for example ([source](http://papers.nips.cc/paper/4824-imagenet-classification-with-deep-convolutional-neural-networks.pdf)):
+This folder contains examples for image classifications. In this task, we assign labels to an image with confidence scores, see the following figure for example ([source](http://papers.nips.cc/paper/4824-imagenet-classification-with-deep-convolutional-neural-networks.pdf)):
 
 <img src=https://raw.githubusercontent.com/dmlc/web-data/master/mxnet/image/image-classification.png
 width=400/>
@@ -58,7 +57,7 @@ We can train a model using multiple machines.
   ../../tools/launch.py -n 2 python train_mnist.py --kv-store dist_sync
   ```
 
-  here we can either use synchronized SGD `dist_sync` or use asynchronized SGD
+  here we can either use synchronous SGD `dist_sync` or use asynchronous SGD
   `dist_async`
 
 - assume there are several ssh-able machines, and this mxnet folder is
@@ -94,6 +93,25 @@ We can train a model using multiple machines.
 
 See more launch options, e.g. by `Yarn`, and how to write a distributed training
 program on this [tutorial](http://mxnet.readthedocs.io/en/latest/how_to/multi_devices.html)
+
+### Benchmark
+To run benchmark on imagenet networks, use **--benchmark** as the argument to train_imagenet.py, An example is shown below:  
+
+```
+python train_imagenet.py --gpus 0,1 --network inception-v3 --batch-size 64 --data-shape 299 --num-epochs 1 --kv-store device --benchmark
+```
+When running in benchmark mode, the script generates synthetic data of the given data shape and batch size.  
+The `benchmark.py` can be used to run a series of benchmarks against different image networks on a given set of workers and takes the following arguments:  
+**--worker_file**: list of workers.  
+**--worker_count**: total number of workers.  
+**--gpu_count**: number of gpus to use on each worker.  
+**--networks**: one or more networks in the format network_name:batch_size:image_size
+The script runs benchmarks on variable number of gpus upto gpu_count starting from 1 gpu doubling the number of gpus in each run using **kv-store=device** and after that running on variable number of nodes on all gpus starting with 1 node upto worker_count doubling the number of nodes used in each run using **kv-store==dist_sync_device**.  
+An example to run the benchmark script is shown below with 8 workers and 16 gpus on each worker:
+
+```
+python benchmark.py --worker_file /opt/deeplearning/workers --worker_count 8 --gpu_count 16 --networks 'inception-v3:32:299'
+```
 
 ### Predict
 
@@ -147,7 +165,7 @@ model.fit(X = train_iter, eval_data = val_iter)
 
 The following factors may significant affect the performance:
 
-1. Use a fast backend. A fast BLAS library, e.g. openblas, altas,
+1. Use a fast backend. A fast BLAS library, e.g. openblas, atlas,
 and mkl, is necessary if only using CPU. While for Nvidia GPUs, we strongly
 recommend to use CUDNN.
 2. Three important things for the input data:
@@ -277,7 +295,7 @@ python train_cifar10.py --batch-size 128 --lr 0.1 --lr-factor .94 --num-epoch 50
   ```
 
   *Note: S3 is unstable sometimes, if your training hangs or getting error
-   freqently, you cant download data to `/mnt` first*
+   frequently, you cant download data to `/mnt` first*
 
   Accuracy vs epoch ([the interactive figure](https://docs.google.com/spreadsheets/d/1AEesHjWUZOzCN0Gp_PYI1Cw4U1kZMKot360p9Fowmjw/pubchart?oid=1740787404&format=interactive)):
 

@@ -5,10 +5,10 @@
 import logging
 import numpy as np
 
+from ..base import mx_real_t
 from .. import context as ctx
 from .. import ndarray as nd
 
-from ..base import mx_real_t
 from ..executor_manager import _split_input_slice
 from ..io import DefaultLayoutMapper
 
@@ -109,10 +109,14 @@ class DataParallelExecutorGroup(object):
         space for gradient, nor do gradient calculation.
     layout_mapper : LayoutMapper
         A helper to decide the data layout of data, label and outputs.
+    grad_req : str, list of str, dict of str to str
+        Requirement for gradient accumulation. Can be 'write', 'add', or 'null'
+        (default to 'write').
+        Can be specified globally (str) or for each argument (list, dict).
     """
     def __init__(self, symbol, contexts, workload, data_shapes, label_shapes, param_names,
                  for_training, inputs_need_grad, shared_group=None, input_types=None,
-                 logger=logging, fixed_param_names=None, layout_mapper=None):
+                 logger=logging, fixed_param_names=None, layout_mapper=None, grad_req='write'):
         self.param_names = param_names
         self.arg_names = symbol.list_arguments()
         self.aux_names = symbol.list_auxiliary_states()
@@ -130,6 +134,35 @@ class DataParallelExecutorGroup(object):
         self.fixed_param_names = fixed_param_names
         if self.fixed_param_names is None:
             self.fixed_param_names = []
+
+        if not for_training:
+            grad_req = 'null'
+
+        data_names = [x[0] for x in data_shapes]
+        if isinstance(grad_req, str):
+            self.grad_req = {}
+            for k in self.arg_names:
+                if k in self.param_names:
+                    self.grad_req[k] = 'null' if k in self.fixed_param_names else grad_req
+                elif k in data_names:
+                    self.grad_req[k] = grad_req if self.inputs_need_grad else 'null'
+                else:
+                    self.grad_req[k] = 'null'
+        elif isinstance(grad_req, (list, tuple)):
+            assert len(grad_req) == len(self.arg_names)
+            self.grad_req = dict(zip(self.arg_names, grad_req))
+        elif isinstance(grad_req, dict):
+            self.grad_req = {}
+            for k in self.arg_names:
+                if k in self.param_names:
+                    self.grad_req[k] = 'null' if k in self.fixed_param_names else 'write'
+                elif k in data_names:
+                    self.grad_req[k] = 'write' if self.inputs_need_grad else 'null'
+                else:
+                    self.grad_req[k] = 'null'
+            self.grad_req.update(grad_req)
+        else:
+            raise ValueError("grad_req must be one of str, list, tuple, or dict.")
 
         if shared_group is not None:
             self.shared_data_arrays = shared_group.shared_data_arrays
@@ -281,7 +314,9 @@ class DataParallelExecutorGroup(object):
             is_train = self.for_training
 
         if self.label_arrays is not None:
-            _load_label(data_batch, self.label_arrays, self.label_layouts)
+            assert not is_train or data_batch.label
+            if data_batch.label:
+                _load_label(data_batch, self.label_arrays, self.label_layouts)
 
         for exec_ in self.execs:
             exec_.forward(is_train=is_train)
@@ -425,21 +460,8 @@ class DataParallelExecutorGroup(object):
         arg_types, _, aux_types = self.symbol.infer_type(**input_types)
         assert arg_types is not None, "type inference failed"
 
-        data_names = [x[0] for x in data_shapes]
-
         arg_arrays = []
         grad_arrays = {} if self.for_training else None
-        grad_req = {}
-        for name in self.arg_names:
-            if self.for_training:
-                if name in self.param_names and name not in self.fixed_param_names:
-                    grad_req[name] = 'write'
-                elif name in data_names:
-                    grad_req[name] = 'write' if self.inputs_need_grad else 'null'
-                else:
-                    grad_req[name] = 'null'
-            else:
-                grad_req[name] = 'null'
 
         def _get_or_reshape(name, shared_data_arrays, arg_shape, arg_type, context, logger):
             """Internal helper to get a memory block or re-use by re-shaping"""
@@ -474,21 +496,21 @@ class DataParallelExecutorGroup(object):
             if name in self.param_names: # model parameter
                 if shared_exec is None:
                     arg_arr = nd.zeros(arg_shapes[j], context, dtype=arg_types[j])
-                    if grad_req[name] != 'null':
+                    if self.grad_req[name] != 'null':
                         grad_arr = nd.zeros(arg_shapes[j], context, dtype=arg_types[j])
                         grad_arrays[name] = grad_arr
                 else:
                     arg_arr = shared_exec.arg_dict[name]
                     assert arg_arr.shape == arg_shapes[j]
                     assert arg_arr.dtype == arg_types[j]
-                    if grad_req[name] != 'null':
+                    if self.grad_req[name] != 'null':
                         grad_arrays[name] = shared_exec.grad_dict[name]
             else: # data or label
                 arg_arr = _get_or_reshape(name, shared_data_arrays, arg_shapes[j], arg_types[j],
                                           context, self.logger)
 
                 # data might also need grad if inputs_need_grad is True
-                if grad_req[name] != 'null':
+                if self.grad_req[name] != 'null':
                     grad_arrays[name] = _get_or_reshape('grad of ' + name, shared_data_arrays,
                                                         arg_shapes[j], arg_types[j], context,
                                                         self.logger)
@@ -506,7 +528,7 @@ class DataParallelExecutorGroup(object):
 
         executor = self.symbol.bind(ctx=context, args=arg_arrays,
                                     args_grad=grad_arrays, aux_states=aux_arrays,
-                                    grad_req=grad_req, shared_exec=shared_exec)
+                                    grad_req=self.grad_req, shared_exec=shared_exec)
         return executor
 
     def _sliced_shape(self, shapes, i, major_axis):
