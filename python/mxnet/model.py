@@ -18,6 +18,8 @@ from .context import Context, cpu
 from .initializer import Uniform
 from .optimizer import get_updater
 from .executor_manager import DataParallelExecutorManager, _check_arguments, _load_data
+from .io import DataDesc
+from .base import mx_real_t
 
 BASE_ESTIMATOR = object
 
@@ -112,6 +114,20 @@ def _update_params(param_arrays, grad_arrays, updater, num_device,
             w, g = p
             updater(index*num_device+k, g, w)
 
+
+def _multiple_callbacks(callbacks, *args, **kwargs):
+    """Sends args and kwargs to any configured callbacks.
+    This handles the cases where the 'callbacks' variable
+    is None, a single function, or a list.
+    """
+    if isinstance(callbacks, list):
+        for cb in callbacks:
+            cb(*args, **kwargs)
+        return
+    if callbacks:
+        callbacks(*args, **kwargs)
+
+
 def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
                         arg_params, aux_params,
                         begin_epoch, end_epoch, epoch_size, optimizer,
@@ -119,10 +135,12 @@ def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
                         train_data, eval_data=None, eval_metric=None,
                         epoch_end_callback=None, batch_end_callback=None,
                         logger=None, work_load_list=None, monitor=None,
-                        eval_batch_end_callback=None, sym_gen=None,
+                        eval_end_callback=None,
+                        eval_batch_end_callback=None, sym_gen=None, 
                         eval_interval=None):
     """Internal training function on multiple devices.
     This function will also work for single device as well.
+
     Parameters
     ----------
     symbol : Symbol
@@ -257,11 +275,7 @@ def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
                                                      nbatch=nbatch,
                                                      eval_metric=eval_metric,
                                                      locals=locals())
-                    if isinstance(batch_end_callback, list):
-                        for call in batch_end_callback:
-                            call(batch_end_params)
-                    else:
-                        batch_end_callback(batch_end_params)
+                    _multiple_callbacks(batch_end_callback, batch_end_params)
 
                 # For multiple evaluations during one training epoch
                 if eval_interval is not None and eval_data is not None:
@@ -300,17 +314,13 @@ def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
         if epoch_end_callback or epoch + 1 == end_epoch:
             executor_manager.copy_to(arg_params, aux_params)
 
-        if epoch_end_callback != None:
-            if isinstance(epoch_end_callback, list):
-                for call in epoch_end_callback:
-                    call(epoch, symbol, arg_params, aux_params)
-            else:
-                epoch_end_callback(epoch, symbol, arg_params, aux_params)
+        _multiple_callbacks(epoch_end_callback, epoch, symbol, arg_params, aux_params)
 
         # evaluation
         if eval_data:
             eval_metric.reset()
             eval_data.reset()
+            total_num_batch = 0
             for i, eval_batch in enumerate(eval_data):
                 executor_manager.load_data_batch(eval_batch)
                 executor_manager.forward(is_train=False)
@@ -320,14 +330,14 @@ def _train_multi_device(symbol, ctx, arg_names, param_names, aux_names,
                                                      nbatch=i,
                                                      eval_metric=eval_metric,
                                                      locals=locals())
-                    if isinstance(eval_batch_end_callback, list):
-                        for call in eval_batch_end_callback:
-                            call(batch_end_params)
-                    else:
-                        eval_batch_end_callback(batch_end_params)
-            name_value = eval_metric.get_name_value()
-            for name, value in name_value:
-                logger.info('Epoch[%d] Validation-%s=%f', epoch, name, value)
+                    _multiple_callbacks(eval_batch_end_callback, batch_end_params)
+                total_num_batch += 1
+            if eval_end_callback != None:
+                eval_end_params = BatchEndParam(epoch=epoch,
+                                                nbatch=total_num_batch,
+                                                eval_metric=eval_metric,
+                                                locals=locals())
+                _multiple_callbacks(eval_end_callback, eval_end_params)
             eval_data.reset()
     # end of all epochs
     return
@@ -399,6 +409,7 @@ def load_checkpoint(prefix, epoch):
             aux_params[name] = v
     return (symbol, arg_params, aux_params)
 
+from .callback import LogValidationMetricsCallback
 
 class FeedForward(BASE_ESTIMATOR):
     """Model class of MXNet for training and predicting feedforward nets.
@@ -545,7 +556,7 @@ class FeedForward(BASE_ESTIMATOR):
     def __setstate__(self, state):
         self.__dict__.update(state)
 
-    def _init_predictor(self, input_shapes):
+    def _init_predictor(self, input_shapes, type_dict=None):
         """Initialize the predictor module for running prediction."""
         if self._pred_exec is not None:
             arg_shapes, _, _ = self.symbol.infer_shape(**dict(input_shapes))
@@ -555,7 +566,7 @@ class FeedForward(BASE_ESTIMATOR):
                 return
         # for now only use the first device
         pred_exec = self.symbol.simple_bind(
-            self.ctx[0], grad_req='null', **dict(input_shapes))
+            self.ctx[0], grad_req='null', type_dict=type_dict, **dict(input_shapes))
         pred_exec.copy_params_from(self.arg_params, self.aux_params)
 
         _check_arguments(self.symbol)
@@ -608,6 +619,7 @@ class FeedForward(BASE_ESTIMATOR):
 
     def predict(self, X, num_batch=None, return_data=False, reset=True):
         """Run the prediction, always only use one device.
+
         Parameters
         ----------
         X : mxnet.DataIter
@@ -624,7 +636,14 @@ class FeedForward(BASE_ESTIMATOR):
             X.reset()
         data_shapes = X.provide_data
         data_names = [x[0] for x in data_shapes]
-        self._init_predictor(data_shapes)
+        type_dict = dict((key, value.dtype) for (key, value) in self.arg_params.items())
+        for x in X.provide_data:
+            if isinstance(x, DataDesc):
+                type_dict[x.name] = x.dtype
+            else:
+                type_dict[x[0]] = mx_real_t
+
+        self._init_predictor(data_shapes, type_dict)
         batch_size = X.batch_size
         data_arrays = [self._pred_exec.arg_dict[name] for name in data_names]
         output_list = [[] for _ in range(len(self._pred_exec.outputs))]
@@ -669,6 +688,7 @@ class FeedForward(BASE_ESTIMATOR):
 
     def score(self, X, eval_metric='acc', num_batch=None, batch_end_callback=None, reset=True):
         """Run the model on X and calculate the score with eval_metric
+
         Parameters
         ----------
         X : mxnet.DataIter
@@ -691,7 +711,14 @@ class FeedForward(BASE_ESTIMATOR):
 
         data_shapes = X.provide_data
         data_names = [x[0] for x in data_shapes]
-        self._init_predictor(data_shapes)
+        type_dict = dict((key, value.dtype) for (key, value) in self.arg_params.items())
+        for x in X.provide_data:
+            if isinstance(x, DataDesc):
+                type_dict[x.name] = x.dtype
+            else:
+                type_dict[x[0]] = mx_real_t
+
+        self._init_predictor(data_shapes, type_dict)
         data_arrays = [self._pred_exec.arg_dict[name] for name in data_names]
 
         for i, batch in enumerate(X):
@@ -706,18 +733,13 @@ class FeedForward(BASE_ESTIMATOR):
                                                  nbatch=i,
                                                  eval_metric=eval_metric,
                                                  locals=locals())
-                if isinstance(batch_end_callback, list):
-                    for call in batch_end_callback:
-                        call(batch_end_params)
-                else:
-                    batch_end_callback(batch_end_params)
+                _multiple_callbacks(batch_end_callback, batch_end_params)
         return eval_metric.get()[1]
-
 
     def fit(self, X, y=None, eval_data=None, eval_metric='acc',
             epoch_end_callback=None, batch_end_callback=None, kvstore='local', logger=None,
-            work_load_list=None, monitor=None, eval_batch_end_callback=None,
-            eval_interval=None):
+            work_load_list=None, monitor=None, eval_end_callback=LogValidationMetricsCallback(),
+            eval_batch_end_callback=None, eval_interval=None):
         """Fit the model.
 
         Parameters
@@ -814,6 +836,7 @@ class FeedForward(BASE_ESTIMATOR):
                             batch_end_callback=batch_end_callback,
                             kvstore=kvstore, update_on_kvstore=update_on_kvstore,
                             logger=logger, work_load_list=work_load_list, monitor=monitor,
+                            eval_end_callback=eval_end_callback,
                             eval_batch_end_callback=eval_batch_end_callback,
                             sym_gen=self.sym_gen, eval_interval=eval_interval)
 
@@ -877,6 +900,7 @@ class FeedForward(BASE_ESTIMATOR):
                eval_data=None, eval_metric='acc',
                epoch_end_callback=None, batch_end_callback=None,
                kvstore='local', logger=None, work_load_list=None,
+               eval_end_callback=LogValidationMetricsCallback(),
                eval_batch_end_callback=None, **kwargs):
         """Functional style to create a model.
         This function will be more consistent with functional
@@ -932,5 +956,6 @@ class FeedForward(BASE_ESTIMATOR):
                   kvstore=kvstore,
                   logger=logger,
                   work_load_list=work_load_list,
+                  eval_end_callback=eval_end_callback,
                   eval_batch_end_callback=eval_batch_end_callback)
         return model

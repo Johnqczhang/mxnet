@@ -1,4 +1,4 @@
-# pylint: disable=too-many-arguments, too-many-locals, too-many-public-methods, too-many-branches
+# pylint: disable=fixme, too-many-arguments, too-many-locals, too-many-public-methods, too-many-branches
 """`BaseModule` defines an API for modules."""
 
 import logging
@@ -130,6 +130,7 @@ class BaseModule(object):
         self.backward()
 
     def score(self, eval_data, eval_metric, num_batch=None, batch_end_callback=None,
+              score_end_callback=None,
               reset=True, epoch=0):
         """Run prediction on `eval_data` and evaluate the performance according to
         `eval_metric`.
@@ -159,6 +160,8 @@ class BaseModule(object):
             eval_metric = metric.create(eval_metric)
 
         eval_metric.reset()
+        actual_num_batch = 0
+
         for nbatch, eval_batch in enumerate(eval_data):
             if num_batch is not None and nbatch == num_batch:
                 break
@@ -173,6 +176,16 @@ class BaseModule(object):
                                                  locals=locals())
                 for callback in _as_list(batch_end_callback):
                     callback(batch_end_params)
+            actual_num_batch += 1
+
+        if score_end_callback:
+            params = BatchEndParam(epoch=epoch,
+                                   nbatch=actual_num_batch,
+                                   eval_metric=eval_metric,
+                                   locals=locals())
+            for callback in _as_list(score_end_callback):
+                callback(params)
+
         return eval_metric.get_name_value()
 
     def iter_predict(self, eval_data, num_batch=None, reset=True):
@@ -275,6 +288,7 @@ class BaseModule(object):
     def fit(self, train_data, eval_data=None, eval_metric='acc',
             epoch_end_callback=None, batch_end_callback=None, kvstore='local',
             optimizer='sgd', optimizer_params=(('learning_rate', 0.01),),
+            eval_end_callback=None,
             eval_batch_end_callback=None, initializer=Uniform(0.01),
             arg_params=None, aux_params=None, allow_missing=False,
             force_rebind=False, force_init=False, begin_epoch=0, num_epoch=None,
@@ -302,7 +316,11 @@ class BaseModule(object):
             Default `(('learning_rate', 0.01),)`. The parameters for the optimizer constructor.
             The default value is not a `dict`, just to avoid pylint warning on dangerous
             default values.
+        eval_end_callback : function or list of function
+            These will be called at the end of each full evaluation, with the metrics over
+            the entire evaluation set.
         eval_batch_end_callback : function or list of function
+            These will be called at the end of each minibatch during evaluation
         initializer : Initializer
             Will be called to initialize the module parameters if not already initialized.
         arg_params : dict
@@ -333,6 +351,7 @@ class BaseModule(object):
 
         if hasattr(train_data, 'layout_mapper'):
             self.layout_mapper = train_data.layout_mapper
+
         self.bind(data_shapes=train_data.provide_data, label_shapes=train_data.provide_label,
                   for_training=True, force_rebind=force_rebind)
         if monitor is not None:
@@ -385,7 +404,9 @@ class BaseModule(object):
             # evaluation on validation set
             if eval_data:
                 res = self.score(eval_data, validation_metric,
+                                 score_end_callback=eval_end_callback,
                                  batch_end_callback=eval_batch_end_callback, epoch=epoch)
+                #TODO: pull this into default
                 for name, val in res:
                     self.logger.info('Epoch[%d] Validation-%s=%f', epoch, name, val)
 
@@ -607,7 +628,8 @@ class BaseModule(object):
     # module setup
     ################################################################################
     def bind(self, data_shapes, label_shapes=None, for_training=True,
-             inputs_need_grad=False, force_rebind=False, shared_module=None):
+             inputs_need_grad=False, force_rebind=False, shared_module=None,
+             grad_req='write'):
         """Bind the symbols to construct executors. This is necessary before one
         can perform computation with the module.
 
@@ -630,6 +652,10 @@ class BaseModule(object):
             Default is `None`. This is used in bucketing. When not `None`, the shared module
             essentially corresponds to a different bucket -- a module with different symbol
             but with the same sets of parameters (e.g. unrolled RNNs with different lengths).
+        grad_req : str, list of str, dict of str to str
+            Requirement for gradient accumulation. Can be 'write', 'add', or 'null'
+            (default to 'write').
+            Can be specified globally (str) or for each argument (list, dict).
         """
         raise NotImplementedError()
 
