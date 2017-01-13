@@ -73,7 +73,6 @@ endif
 
 ifeq ($(USE_NNPACK), 1)
 	CFLAGS += -DMXNET_USE_NNPACK=1
-	CFLAGS += -DMXNET_USE_NNPACK_NUM_THREADS=$(USE_NNPACK_NUM_THREADS)
 	LDFLAGS += -lnnpack
 endif
 
@@ -300,8 +299,10 @@ rpkg:
 	echo "import(methods)" >> R-package/NAMESPACE
 	R CMD INSTALL R-package
 	Rscript -e "require(mxnet); mxnet:::mxnet.export(\"R-package\")"
+	rm -rf R-package/NAMESPACE
 	Rscript -e "require(roxygen2); roxygen2::roxygenise(\"R-package\")"
 	R CMD build --no-build-vignettes R-package
+	rm -rf mxnet_current_r.tar.gz
 	mv mxnet_*.tar.gz mxnet_current_r.tar.gz
 
 scalapkg:
