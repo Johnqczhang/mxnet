@@ -12,11 +12,14 @@ namespace op {
 DMLC_REGISTER_PARAMETER(ReshapeParam);
 DMLC_REGISTER_PARAMETER(TransposeParam);
 DMLC_REGISTER_PARAMETER(ExpandDimParam);
-DMLC_REGISTER_PARAMETER(SimpleCropParam);
+DMLC_REGISTER_PARAMETER(ClipParam);
 DMLC_REGISTER_PARAMETER(SimpleCropAssignScalarParam);
 DMLC_REGISTER_PARAMETER(SliceParam);
+DMLC_REGISTER_PARAMETER(SliceAxisParam);
 DMLC_REGISTER_PARAMETER(FlipParam);
 DMLC_REGISTER_PARAMETER(DotParam);
+DMLC_REGISTER_PARAMETER(RepeatParam);
+DMLC_REGISTER_PARAMETER(TileParam);
 
 NNVM_REGISTER_OP(Reshape)
 .MXNET_DESCRIBE("Reshape input according to a target shape spec.\n"
@@ -133,46 +136,50 @@ NNVM_REGISTER_OP(expand_dims)
 .add_argument("data", "NDArray", "Source input")
 .add_arguments(ExpandDimParam::__FIELDS__());
 
-NNVM_REGISTER_OP(crop)
-.MXNET_DESCRIBE("(Crop the input tensor and return a new one.\n\n"
+NNVM_REGISTER_OP(slice)
+.add_alias("crop")
+.MXNET_DESCRIBE("Crop the input tensor and return a new one.\n\n"
 "Requirements\n"
 "------------\n"
 "- the input and output (if explicitly given) are of the same data type,\n"
-"  and on the same device.\n"
-")")
-.set_num_inputs(1)
-.set_num_outputs(1)
-.set_attr_parser(ParamParser<SimpleCropParam>)
-.set_attr<nnvm::FInferShape>("FInferShape", CropShape)
+"  and on the same device.\n")
+.set_attr_parser(ParamParser<SliceParam>)
+.set_attr<nnvm::FInferShape>("FInferShape", SliceShape)
 .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<1, 1>)
-.set_attr<FCompute>("FCompute<cpu>", Crop<cpu>)
+.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseNone{"_backward_slice"})
+.set_attr<FCompute>("FCompute<cpu>", Slice<cpu>)
 .add_argument("data", "NDArray", "Source input")
-.add_arguments(SimpleCropParam::__FIELDS__());
+.add_arguments(SliceParam::__FIELDS__());
 
-NNVM_REGISTER_OP(_crop_assign)
-.MXNET_DESCRIBE("(Assign the rhs to a cropped subset of lhs.\n\n"
+NNVM_REGISTER_OP(_backward_slice)
+.set_attr_parser(ParamParser<SliceParam>)
+.set_attr<nnvm::TIsBackward>("TIsBackward", true)
+.set_attr<FCompute>("FCompute<cpu>", SliceBackward<cpu>);
+
+NNVM_REGISTER_OP(_slice_assign)
+.add_alias("_crop_assign")
+.MXNET_DESCRIBE("Assign the rhs to a cropped subset of lhs.\n\n"
 "Requirements\n"
 "------------\n"
 "- output should be explicitly given and be the same as lhs.\n"
-"- lhs and rhs are of the same data type, and on the same device.\n"
-")")
+"- lhs and rhs are of the same data type, and on the same device.\n")
 .set_num_inputs(2)
 .set_num_outputs(1)
 .set_attr<nnvm::FListInputNames>("FListInputNames",
   [](const NodeAttrs& attrs) {
     return std::vector<std::string>{"lhs", "rhs"};
   })
-.set_attr_parser(ParamParser<SimpleCropParam>)
-.set_attr<nnvm::FInferShape>("FInferShape", CropAssignShape)
+.set_attr_parser(ParamParser<SliceParam>)
+.set_attr<nnvm::FInferShape>("FInferShape", SliceAssignShape)
 .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<2, 1>)
 .set_attr<nnvm::FInplaceOption>("FInplaceOption",
   [](const NodeAttrs& attrs){
     return std::vector<std::pair<int, int> >{{0, 0}};
   })
-.set_attr<FCompute>("FCompute<cpu>", CropAssign<cpu>)
+.set_attr<FCompute>("FCompute<cpu>", SliceAssign<cpu>)
 .add_argument("lhs", "NDArray", "Source input")
 .add_argument("rhs", "NDArray", "value to assign")
-.add_arguments(SimpleCropParam::__FIELDS__());
+.add_arguments(SliceParam::__FIELDS__());
 
 NNVM_REGISTER_OP(_crop_assign_scalar)
 .MXNET_DESCRIBE("(Assign the scalar to a cropped subset of the input.\n\n"
@@ -194,23 +201,25 @@ NNVM_REGISTER_OP(_crop_assign_scalar)
 .add_arguments(SimpleCropAssignScalarParam::__FIELDS__());
 
 NNVM_REGISTER_OP(slice_axis)
-.MXNET_DESCRIBE("Slice the input along certain axis and return a sliced array.")
+.MXNET_DESCRIBE("Slice the input along certain axis and return a sliced array."
+                " The slice will be taken from [begin, end)."
+                " end can be None and axis can be negative.")
 .set_num_inputs(1)
 .set_num_outputs(1)
-.set_attr_parser(ParamParser<SliceParam>)
-.set_attr<nnvm::FInferShape>("FInferShape", SliceShape)
+.set_attr_parser(ParamParser<SliceAxisParam>)
+.set_attr<nnvm::FInferShape>("FInferShape", SliceAxisShape)
 .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<1, 1>)
-.set_attr<FCompute>("FCompute<cpu>", Slice<cpu>)
+.set_attr<FCompute>("FCompute<cpu>", SliceAxis<cpu>)
 .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseNone{"_backward_slice_axis"})
 .add_argument("data", "NDArray", "Source input")
-.add_arguments(SliceParam::__FIELDS__());
+.add_arguments(SliceAxisParam::__FIELDS__());
 
 NNVM_REGISTER_OP(_backward_slice_axis)
 .set_num_inputs(1)
 .set_num_outputs(1)
-.set_attr_parser(ParamParser<SliceParam>)
+.set_attr_parser(ParamParser<SliceAxisParam>)
 .set_attr<nnvm::TIsBackward>("TIsBackward", true)
-.set_attr<FCompute>("FCompute<cpu>", SliceGrad_<cpu>);
+.set_attr<FCompute>("FCompute<cpu>", SliceAxisGrad_<cpu>);
 
 NNVM_REGISTER_OP(flip)
 .MXNET_DESCRIBE("Flip the input tensor along axis and return a new one.")
@@ -225,7 +234,13 @@ NNVM_REGISTER_OP(flip)
 .add_arguments(FlipParam::__FIELDS__());
 
 NNVM_REGISTER_OP(dot)
-.MXNET_DESCRIBE("Calculate dot product of two matrices or two vectors.")
+.MXNET_DESCRIBE(
+  "Calculate dot product of two matrices or two vectors. "
+  "If matrices have more than two dimensions, will do dot "
+  "over the last (or first if transpose_a is true) axis of lhs "
+  "and the first (or last if transpose_b is true) axis of rhs. "
+  "Shape of result array will be the rest of lhs and rhs's axes "
+  "concatenated.")
 .set_num_inputs(2)
 .set_num_outputs(1)
 .set_attr_parser(ParamParser<DotParam>)
@@ -282,5 +297,69 @@ NNVM_REGISTER_OP(_backward_batch_dot)
 .set_attr<nnvm::TIsBackward>("TIsBackward", true)
 .set_attr<FCompute>("FCompute<cpu>", BatchDotBackward_<cpu>);
 
+NNVM_REGISTER_OP(clip)
+.MXNET_DESCRIBE("Clip ndarray elements to range (a_min, a_max)")
+.set_num_inputs(1)
+.set_num_outputs(1)
+.set_attr_parser(ParamParser<ClipParam>)
+.set_attr<nnvm::FInferShape>("FInferShape", ElemwiseShape<1, 1>)
+.set_attr<nnvm::FInferType>("FInferType", ElemwiseType<1, 1>)
+.set_attr<FCompute>("FCompute<cpu>", Clip<cpu>)
+.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{ "_backward_clip" })
+.add_argument("data", "NDArray", "Source input")
+.add_arguments(ClipParam::__FIELDS__());
+
+NNVM_REGISTER_OP(_backward_clip)
+.set_num_inputs(1)
+.set_num_outputs(1)
+.set_attr_parser(ParamParser<ClipParam>)
+.set_attr<nnvm::TIsBackward>("TIsBackward", true)
+.set_attr<FCompute>("FCompute<cpu>", ClipGrad_<cpu>);
+
+NNVM_REGISTER_OP(repeat)
+.MXNET_DESCRIBE("Repeat elements of an array")
+.set_num_outputs(1)
+.set_num_inputs(1)
+.set_attr_parser(ParamParser<RepeatParam>)
+.set_attr<nnvm::FListInputNames>("FListInputNames",
+  [](const NodeAttrs& attrs) {
+    return std::vector<std::string>{"data"};
+  })
+.set_attr<nnvm::FInferShape>("FInferShape", RepeatOpShape)
+.set_attr<nnvm::FInferType>("FInferType", RepeatOpType)
+.set_attr<FCompute>("FCompute<cpu>", RepeatOpForward<cpu>)
+.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseNone{"_backward_repeat"})
+.add_argument("data", "NDArray", "Input data array")
+.add_arguments(RepeatParam::__FIELDS__());
+
+NNVM_REGISTER_OP(_backward_repeat)
+.set_num_inputs(1)
+.set_num_outputs(1)
+.set_attr_parser(ParamParser<RepeatParam>)
+.set_attr<nnvm::TIsBackward>("TIsBackward", true)
+.set_attr<FCompute>("FCompute<cpu>", RepeatOpBackward<cpu>);
+
+NNVM_REGISTER_OP(tile)
+.MXNET_DESCRIBE("Construct an array by repeating A the number of times given by reps.")
+.set_num_outputs(1)
+.set_num_inputs(1)
+.set_attr_parser(ParamParser<TileParam>)
+.set_attr<nnvm::FListInputNames>("FListInputNames",
+  [](const NodeAttrs& attrs) {
+    return std::vector<std::string>{"data"};
+  })
+.set_attr<nnvm::FInferShape>("FInferShape", TileOpShape)
+.set_attr<nnvm::FInferType>("FInferType", TileOpType)
+.set_attr<FCompute>("FCompute<cpu>", TileOpForward<cpu>)
+.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseNone{"_backward_tile"})
+.add_argument("data", "NDArray", "Input data array")
+.add_arguments(TileParam::__FIELDS__());
+
+NNVM_REGISTER_OP(_backward_tile)
+.set_num_inputs(1)
+.set_num_outputs(1)
+.set_attr_parser(ParamParser<TileParam>)
+.set_attr<nnvm::TIsBackward>("TIsBackward", true)
+.set_attr<FCompute>("FCompute<cpu>", TileOpBackward<cpu>);
 }  // namespace op
 }  // namespace mxnet

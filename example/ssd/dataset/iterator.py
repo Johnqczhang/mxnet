@@ -45,12 +45,7 @@ class DetIter(mx.io.DataIter):
         if isinstance(data_shape, int):
             data_shape = (data_shape, data_shape)
         self._data_shape = data_shape
-        if isinstance(mean_pixels, list):
-            self._mean_pixels = mx.nd.Reshape(
-                    mx.nd.array(mean_pixels),
-                    shape = (3,1,1))
-        else:
-            self._mean_pixels = mean_pixels
+        self._mean_pixels = mx.nd.array(mean_pixels).reshape((3,1,1))
         if not rand_samplers:
             self._rand_samplers = []
         else:
@@ -178,7 +173,7 @@ class DetIter(mx.io.DataIter):
         else:
             interp_methods = [cv2.INTER_LINEAR]
         interp_method = interp_methods[int(np.random.uniform(0, 1) * len(interp_methods))]
-        data = mx.img.imresize(data, self._data_shape[0], self._data_shape[1], interp_method)
+        data = mx.img.imresize(data, self._data_shape[1], self._data_shape[0], interp_method)
         if self.is_train and self._rand_mirror:
             if np.random.uniform(0, 1) > 0.5:
                 data = mx.nd.flip(data, axis=1)

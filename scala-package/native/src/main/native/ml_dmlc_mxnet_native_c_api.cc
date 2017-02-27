@@ -7,12 +7,14 @@
 #include <nnvm/c_api.h>
 #include <mxnet/c_api.h>
 #include <dmlc/logging.h>
+#include <mxnet/ndarray.h>
 #include <mutex>
 #include <iostream>
 #include <functional>
 #include <string>
 #include <unordered_map>
 #include "jni_helper_func.h"
+ #include "../../../../../src/common/cuda_utils.h"
 
 JavaVM *_jvm;
 
@@ -2112,6 +2114,10 @@ JNIEXPORT jint JNICALL Java_ml_dmlc_mxnet_LibInfo_mxCustomOpRegister
                 jlongArray ptrsArr = env->NewLongArray(size);
                 env->SetLongArrayRegion(
                   ptrsArr, (jsize)0, (jsize)size, reinterpret_cast<jlong*>(ptrs));
+#if MXNET_USE_CUDA
+                mxnet::NDArray* tmp = reinterpret_cast<mxnet::NDArray*>(ptrs[0]);
+                CUDA_CALL(cudaSetDevice(tmp->ctx().dev_id));
+#endif
                 success = env->CallBooleanMethod(globalOpMap.at(key), midForward,
                                                        size,
                                                        ptrsArr,
@@ -2272,4 +2278,22 @@ JNIEXPORT jint JNICALL Java_ml_dmlc_mxnet_LibInfo_mxCustomOpRegister
     static_cast<bool(*)(const char*, const int, const char**, const char**, CustomOpPropInfo*)>(
       creatorLambda);
   return MXCustomOpRegister(regName, creator);
+}
+
+JNIEXPORT jint JNICALL Java_ml_dmlc_mxnet_LibInfo_mxSetProfilerConfig
+  (JNIEnv *env, jobject obj, jint jmode, jstring jfilename) {
+  const char *fileName = env->GetStringUTFChars(jfilename, 0);
+  int ret = MXSetProfilerConfig(jmode, fileName);
+  env->ReleaseStringUTFChars(jfilename, fileName);
+  return ret;
+}
+
+JNIEXPORT jint JNICALL Java_ml_dmlc_mxnet_LibInfo_mxSetProfilerState
+  (JNIEnv *env, jobject obj, jint jstate) {
+  return MXSetProfilerState(jstate);
+}
+
+JNIEXPORT jint JNICALL Java_ml_dmlc_mxnet_LibInfo_mxDumpProfile
+  (JNIEnv *env, jobject obj) {
+  return MXDumpProfile();
 }

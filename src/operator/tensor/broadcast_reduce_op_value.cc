@@ -22,6 +22,15 @@ MXNET_OPERATOR_REGISTER_REDUCE_BACKWARD(_backward_sum)
 .set_num_inputs(1)
 .set_attr<FCompute>("FCompute<cpu>", ReduceAxesBackwardUseNone<cpu>);
 
+MXNET_OPERATOR_REGISTER_REDUCE(mean)
+.MXNET_DESCRIBE("Compute mean src along axis. If axis is empty, global reduction is performed")
+.set_attr<FCompute>("FCompute<cpu>", ReduceAxesCompute<cpu, mshadow::red::sum, true>)
+.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseNone{"_backward_mean"});
+
+MXNET_OPERATOR_REGISTER_REDUCE_BACKWARD(_backward_mean)
+.set_num_inputs(1)
+.set_attr<FCompute>("FCompute<cpu>", ReduceAxesBackwardUseNone<cpu, true>);
+
 MXNET_OPERATOR_REGISTER_REDUCE(prod)
 .MXNET_DESCRIBE("Compute product of src along axis. "
 "If axis is empty, global reduction is performed")
@@ -80,7 +89,9 @@ MXNET_OPERATOR_REGISTER_BROADCAST(broadcast_axis)
 .set_attr<FCompute>("FCompute<cpu>", BroadcastCompute<cpu>);
 
 MXNET_OPERATOR_REGISTER_BROADCAST(broadcast_to)
-.MXNET_DESCRIBE("Broadcast src to shape")
+.MXNET_DESCRIBE(
+  "Broadcast src to shape. If shape[i] is 0, "
+  "input size will be preserved for axis i.")
 .set_attr_parser(ParamParser<BroadcastToParam>)
 .add_arguments(BroadcastToParam::__FIELDS__())
 .set_attr<nnvm::FInferShape>("FInferShape", BroadcastToShape)

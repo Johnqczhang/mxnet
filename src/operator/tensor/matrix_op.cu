@@ -21,20 +21,23 @@ NNVM_REGISTER_OP(transpose)
 NNVM_REGISTER_OP(expand_dims)
 .set_attr<FCompute>("FCompute<gpu>", IdentityCompute<gpu>);
 
-NNVM_REGISTER_OP(crop)
-.set_attr<FCompute>("FCompute<gpu>", Crop<gpu>);
+NNVM_REGISTER_OP(slice)
+.set_attr<FCompute>("FCompute<gpu>", Slice<gpu>);
 
-NNVM_REGISTER_OP(_crop_assign)
-.set_attr<FCompute>("FCompute<gpu>", CropAssign<gpu>);
+NNVM_REGISTER_OP(_backward_slice)
+.set_attr<FCompute>("FCompute<gpu>", SliceBackward<gpu>);
+
+NNVM_REGISTER_OP(_slice_assign)
+.set_attr<FCompute>("FCompute<gpu>", SliceAssign<gpu>);
 
 NNVM_REGISTER_OP(_crop_assign_scalar)
 .set_attr<FCompute>("FCompute<gpu>", CropAssignScalar<gpu>);
 
 NNVM_REGISTER_OP(slice_axis)
-.set_attr<FCompute>("FCompute<gpu>", Slice<gpu>);
+.set_attr<FCompute>("FCompute<gpu>", SliceAxis<gpu>);
 
 NNVM_REGISTER_OP(_backward_slice_axis)
-.set_attr<FCompute>("FCompute<gpu>", SliceGrad_<gpu>);
+.set_attr<FCompute>("FCompute<gpu>", SliceAxisGrad_<gpu>);
 
 NNVM_REGISTER_OP(flip)
 .set_attr<FCompute>("FCompute<gpu>", Flip<gpu>);
@@ -51,5 +54,22 @@ NNVM_REGISTER_OP(batch_dot)
 NNVM_REGISTER_OP(_backward_batch_dot)
 .set_attr<FCompute>("FCompute<gpu>", BatchDotBackward_<gpu>);
 
+NNVM_REGISTER_OP(clip)
+.set_attr<FCompute>("FCompute<gpu>", Clip<gpu>);
+
+NNVM_REGISTER_OP(_backward_clip)
+.set_attr<FCompute>("FCompute<gpu>", ClipGrad_<gpu>);
+
+NNVM_REGISTER_OP(repeat)
+.set_attr<FCompute>("FCompute<gpu>", RepeatOpForward<gpu>);
+
+NNVM_REGISTER_OP(_backward_repeat)
+.set_attr<FCompute>("FCompute<gpu>", RepeatOpBackward<gpu>);
+
+NNVM_REGISTER_OP(tile)
+.set_attr<FCompute>("FCompute<gpu>", TileOpForward<gpu>);
+
+NNVM_REGISTER_OP(_backward_tile)
+.set_attr<FCompute>("FCompute<gpu>", TileOpBackward<gpu>);
 }  // namespace op
 }  // namespace mxnet

@@ -29,9 +29,9 @@ def check_with_uniform(uf, arg_shapes, dim=None, npuf=None, rmin=-10, type_list=
         if isinstance(out1, mx.nd.NDArray):
             out1 = out1.asnumpy()
         if dtype == np.float16:
-            assert reldiff(out1, out2) < 2e-3
+            assert_almost_equal(out1, out2, rtol=2e-3)
         else:
-            assert reldiff(out1, out2) < 1e-6
+            assert_almost_equal(out1, out2)
 
 
 def random_ndarray(dim):
@@ -108,13 +108,13 @@ def test_ndarray_elementwisesum():
 def test_ndarray_negate():
     npy = np.random.uniform(-10, 10, (2,3,4))
     arr = mx.nd.array(npy)
-    assert reldiff(npy, arr.asnumpy()) < 1e-6
-    assert reldiff(-npy, (-arr).asnumpy()) < 1e-6
+    assert_almost_equal(npy, arr.asnumpy())
+    assert_almost_equal(-npy, (-arr).asnumpy())
 
     # a final check to make sure the negation (-) is not implemented
     # as inplace operation, so the contents of arr does not change after
     # we compute (-arr)
-    assert reldiff(npy, arr.asnumpy()) < 1e-6
+    assert_almost_equal(npy, arr.asnumpy())
 
 
 def test_ndarray_choose():
@@ -279,7 +279,7 @@ def test_dot():
     A = mx.nd.array(a)
     B = mx.nd.array(b)
     C = mx.nd.dot(A, B)
-    assert reldiff(c, C.asnumpy()) < 1e-5
+    assert_almost_equal(c, C.asnumpy())
     # Test dot with transpose kargs
     a = np.random.uniform(-3, 3, (3, 4))
     b = np.random.uniform(-3, 3, (3, 5))
@@ -287,7 +287,7 @@ def test_dot():
     A = mx.nd.array(a)
     B = mx.nd.array(b)
     C = mx.nd.dot(A, B, transpose_a=True)
-    assert reldiff(c, C.asnumpy()) < 1e-5
+    assert_almost_equal(c, C.asnumpy())
     # Test dot with transpose kargs
     a = np.random.uniform(-3, 3, (3, 4))
     b = np.random.uniform(-3, 3, (5, 4))
@@ -295,7 +295,7 @@ def test_dot():
     A = mx.nd.array(a)
     B = mx.nd.array(b)
     C = mx.nd.dot(A, B, transpose_b=True)
-    assert reldiff(c, C.asnumpy()) < 1e-5
+    assert_almost_equal(c, C.asnumpy())
     # Test dot with transpose kargs
     a = np.random.uniform(-3, 3, (4, 3))
     b = np.random.uniform(-3, 3, (5, 4))
@@ -303,7 +303,7 @@ def test_dot():
     A = mx.nd.array(a)
     B = mx.nd.array(b)
     C = mx.nd.dot(A, B, transpose_a=True, transpose_b=True)
-    assert reldiff(c, C.asnumpy()) < 1e-5
+    assert_almost_equal(c, C.asnumpy())
 
 
 def test_reduce():
@@ -409,7 +409,7 @@ def test_arange():
         gt = np.arange(start=start, stop=stop, step=step)
         gt = np.broadcast_to(gt.reshape((gt.shape[0], 1)), shape=(gt.shape[0], repeat)).ravel()
         pred = mx.nd.arange(start=start, stop=stop, step=step, repeat=repeat).asnumpy()
-        assert_almost_equal(pred, gt, default_numerical_threshold())
+        assert_almost_equal(pred, gt)
 
 def test_order(ctx=default_context()):
     def gt_topk(dat, axis, ret_typ, k, is_ascend):
@@ -563,6 +563,22 @@ def test_ndarray_lesser_equal():
     z = 1 <= y
     assert (z.asnumpy() == np.ones((2, 3))).all()
 
+def test_take():
+    for data_ndim in range(2, 5):
+        for idx_ndim in range(1, 4):
+            data_shape = ()
+            for _ in range(data_ndim):
+                data_shape += (np.random.randint(low=3, high=6), )
+            data_real = np.random.normal(size=data_shape).astype('float32')
+            idx_shape = ()
+            for _ in range(idx_ndim):
+                idx_shape += (np.random.randint(low=3, high=5), )
+            idx_real = np.random.randint(low=0, high=data_shape[0], size=idx_shape)
+            data_real_mx = mx.nd.array(data_real)
+            idx_real_mx = mx.nd.array(idx_real)
+            result = mx.nd.take(data_real_mx, idx_real_mx)
+            assert_almost_equal(result.asnumpy(), data_real[idx_real])
+
 if __name__ == '__main__':
     test_broadcast_binary()
     test_ndarray_setitem()
@@ -586,3 +602,4 @@ if __name__ == '__main__':
     test_arange()
     test_order()
     test_ndarray_equal()
+    test_take()
