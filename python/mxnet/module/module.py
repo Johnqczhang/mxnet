@@ -16,8 +16,7 @@ from ..model import _create_kvstore, _initialize_kvstore, _update_params, _updat
 from ..model import load_checkpoint
 from ..initializer import Uniform, InitDesc
 
-from .base_module import BaseModule, _check_input_names
-from ..io import DataDesc
+from .base_module import BaseModule, _check_input_names, _parse_data_desc
 
 
 class Module(BaseModule):
@@ -168,6 +167,11 @@ class Module(BaseModule):
         return self._data_names
 
     @property
+    def label_names(self):
+        """A list of names for labels required by this module."""
+        return self._label_names
+
+    @property
     def output_names(self):
         """A list of names for the outputs of this module."""
         return self._output_names
@@ -175,6 +179,7 @@ class Module(BaseModule):
     @property
     def data_shapes(self):
         """Get data shapes.
+
         Returns
         -------
         A list of `(name, shape)` pairs.
@@ -185,11 +190,12 @@ class Module(BaseModule):
     @property
     def label_shapes(self):
         """Get label shapes.
+
         Returns
         -------
-        A list of `(name, shape)` pairs. The return value could be `None` if
-        the module does not need labels, or if the module is not binded for
-        training (in this case, label information is not available).
+            A list of `(name, shape)` pairs. The return value could be `None` if
+            the module does not need labels, or if the module is not binded for
+            training (in this case, label information is not available).
         """
         assert self.binded
         return self._label_shapes
@@ -197,6 +203,7 @@ class Module(BaseModule):
     @property
     def output_shapes(self):
         """Get output shapes.
+
         Returns
         -------
         A list of `(name, shape)` pairs.
@@ -255,7 +262,7 @@ class Module(BaseModule):
                 else:
                     if not allow_missing:
                         raise RuntimeError("%s is not presented" % name)
-                    if initializer != None:
+                    if initializer is not None:
                         initializer(name, arr)
             else:
                 initializer(name, arr)
@@ -361,13 +368,8 @@ class Module(BaseModule):
             # that consumes the labels
             # assert label_shapes is not None
 
-        self._data_shapes = \
-            [x if isinstance(x, DataDesc) else DataDesc(*x) for x in data_shapes]
-        if label_shapes is not None:
-            self._label_shapes = \
-                [x if isinstance(x, DataDesc) else DataDesc(*x) for x in label_shapes]
-        else:
-            self._label_shapes = None
+        self._data_shapes, self._label_shapes = _parse_data_desc(
+            self.data_names, self.label_names, data_shapes, label_shapes)
 
         if shared_module is not None:
             assert isinstance(shared_module, Module) and \
@@ -384,6 +386,7 @@ class Module(BaseModule):
                                                      fixed_param_names=self._fixed_param_names,
                                                      grad_req=grad_req,
                                                      state_names=self._state_names)
+        self._total_exec_bytes = self._exec_group._total_exec_bytes
         if shared_module is not None:
             self.params_initialized = True
             self._arg_params = shared_module._arg_params
@@ -421,13 +424,8 @@ class Module(BaseModule):
             Typically is `data_iter.provide_label`.
         """
         assert self.binded
-        self._data_shapes = \
-            [x if isinstance(x, DataDesc) else DataDesc(*x) for x in data_shapes]
-        if label_shapes is not None:
-            self._label_shapes = \
-                [x if isinstance(x, DataDesc) else DataDesc(*x) for x in label_shapes]
-        else:
-            self._label_shapes = None
+        self._data_shapes, self._label_shapes = _parse_data_desc(
+            self.data_names, self.label_names, data_shapes, label_shapes)
 
         self._exec_group.reshape(self._data_shapes, self._label_shapes)
 
@@ -571,6 +569,11 @@ class Module(BaseModule):
     def get_outputs(self, merge_multi_context=True):
         """Get outputs of the previous forward computation.
 
+        If `merge_multi_context` is `True`, it is like `[out1, out2]`. Otherwise, it
+        is like `[[out1_dev1, out1_dev2], [out2_dev1, out2_dev2]]`. All the output
+        elements are `NDArray`. When `merge_multi_context` is `False`, those `NDArray`
+        might live on different devices.
+
         Parameters
         ----------
         merge_multi_context : bool
@@ -581,9 +584,8 @@ class Module(BaseModule):
 
         Returns
         -------
-        If `merge_multi_context` is `True`, it is like `[out1, out2]`. Otherwise, it
-        is like `[[out1_dev1, out1_dev2], [out2_dev1, out2_dev2]]`. All the output
-        elements are `NDArray`.
+        list of NDArray or list of list of NDArray
+            Output
         """
         assert self.binded and self.params_initialized
         return self._exec_group.get_outputs(merge_multi_context=merge_multi_context)
@@ -591,6 +593,10 @@ class Module(BaseModule):
     def get_input_grads(self, merge_multi_context=True):
         """Get the gradients with respect to the inputs of the module.
 
+        If `merge_multi_context` is `True`, it is like `[grad1, grad2]`. Otherwise, it
+        is like `[[grad1_dev1, grad1_dev2], [grad2_dev1, grad2_dev2]]`. All the output
+        elements are `NDArray`.
+
         Parameters
         ----------
         merge_multi_context : bool
@@ -601,15 +607,18 @@ class Module(BaseModule):
 
         Returns
         -------
-        If `merge_multi_context` is `True`, it is like `[grad1, grad2]`. Otherwise, it
-        is like `[[grad1_dev1, grad1_dev2], [grad2_dev1, grad2_dev2]]`. All the output
-        elements are `NDArray`.
+        list of NDArray or list of list of NDArray
+              Input gradients
         """
         assert self.binded and self.params_initialized and self.inputs_need_grad
         return self._exec_group.get_input_grads(merge_multi_context=merge_multi_context)
 
     def get_states(self, merge_multi_context=True):
         """Get states from all devices
+
+        If `merge_multi_context` is `True`, it is like `[out1, out2]`. Otherwise, it
+        is like `[[out1_dev1, out1_dev2], [out2_dev1, out2_dev2]]`. All the output
+        elements are `NDArray`.
 
         Parameters
         ----------
@@ -621,9 +630,8 @@ class Module(BaseModule):
 
         Returns
         -------
-        If `merge_multi_context` is `True`, it is like `[out1, out2]`. Otherwise, it
-        is like `[[out1_dev1, out1_dev2], [out2_dev1, out2_dev2]]`. All the output
-        elements are `NDArray`.
+        list of NDArray or list of list of NDArray
+            States
         """
         assert self.binded and self.params_initialized
         return self._exec_group.get_states(merge_multi_context=merge_multi_context)

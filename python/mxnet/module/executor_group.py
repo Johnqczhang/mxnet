@@ -57,7 +57,15 @@ def _merge_multi_context(outputs, major_axis):
     rets = []
     for tensors, axis in zip(outputs, major_axis):
         if axis >= 0:
-            rets.append(nd.concatenate(tensors, axis=axis, always_copy=False))
+            # pylint: disable=no-member,protected-access
+            if len(tensors) == 1:
+                rets.append(tensors[0])
+            else:
+                # Concatenate if necessary
+                rets.append(nd.concat(*[tensor.as_in_context(tensors[0].context)
+                                        for tensor in tensors],
+                                      dim=axis))
+            # pylint: enable=no-member,protected-access
         else:
             # negative axis means the there is no batch_size axis, and all the
             # results should be the same on each device. We simply take the
@@ -125,7 +133,8 @@ class DataParallelExecutorGroup(object):
         self.inputs_need_grad = inputs_need_grad
 
         self.logger = logger
-
+        #In the future we should have a better way to profile memory per device (haibin)
+        self._total_exec_bytes = 0
         self.fixed_param_names = fixed_param_names
         if self.fixed_param_names is None:
             self.fixed_param_names = []
@@ -615,6 +624,8 @@ class DataParallelExecutorGroup(object):
         executor = self.symbol.bind(ctx=context, args=arg_arrays,
                                     args_grad=grad_arrays, aux_states=aux_arrays,
                                     grad_req=self.grad_req, shared_exec=shared_exec)
+        # Get the total bytes allocated for this executor
+        self._total_exec_bytes += int(executor.debug_str().split('\n')[-3].split()[1])
         return executor
 
     def _sliced_shape(self, shapes, i, major_axis):
